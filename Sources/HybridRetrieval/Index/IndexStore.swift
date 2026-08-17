@@ -59,12 +59,17 @@ public actor IndexStore {
         chunker: any Chunker = SentenceWindowChunker(),
         embedder: any EmbeddingProvider = HashingEmbedder(),
         lexicalParameters: LexicalIndex.Parameters = .init(),
-        vectorByteBudget: Int = 4 << 20
+        vectorByteBudget: Int = 4 << 20,
+        minimumVectorSimilarity: Double = 0.2
     ) {
         self.chunker = chunker
         self.embedder = embedder
         self.lexical = LexicalIndex(parameters: lexicalParameters)
-        self.vectors = VectorIndex(dimensions: embedder.dimensions, byteBudget: vectorByteBudget)
+        self.vectors = VectorIndex(
+            dimensions: embedder.dimensions,
+            byteBudget: vectorByteBudget,
+            minimumSimilarity: minimumVectorSimilarity
+        )
     }
 
     // MARK: - Ingest
