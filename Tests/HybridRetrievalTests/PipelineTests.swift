@@ -21,7 +21,8 @@ final class PipelineTests: XCTestCase {
     }
 
     func testChunkerBoundsChunkSizeAndAssignsOrdinals() {
-        let chunker = SentenceWindowChunker(targetTokens: 8)
+        let target = 8
+        let chunker = SentenceWindowChunker(targetTokens: target)
         let text = (0..<20).map { "Sentence number \($0) has five tokens." }.joined(separator: " ")
         let chunks = chunker.chunk(text, document: DocumentID("d"))
 
@@ -29,7 +30,16 @@ final class PipelineTests: XCTestCase {
         for (index, chunk) in chunks.enumerated() {
             XCTAssertEqual(chunk.id.ordinal, index, "ordinals must be dense and ordered")
             XCTAssertFalse(chunk.text.isEmpty)
+            // The actual size bound: a window may overshoot by at most the sentence
+            // that crossed the threshold, and sentences here are 6 tokens.
+            let tokens = Tokenizer.tokenize(chunk.text).count
+            XCTAssertLessThanOrEqual(tokens, target + 6,
+                                     "chunk \(index) is unbounded: \(tokens) tokens")
         }
+        // Every source token must survive chunking (overlap may duplicate, never drop).
+        let chunked = Set(chunks.flatMap { Tokenizer.tokenize($0.text) })
+        XCTAssertTrue(Set(Tokenizer.tokenize(text)).isSubset(of: chunked),
+                      "chunking must not lose tokens")
     }
 
     func testChunkerHardSplitsPathologicalSentence() {
