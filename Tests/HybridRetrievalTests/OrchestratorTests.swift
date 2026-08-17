@@ -191,6 +191,32 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertEqual(response.hits.map { $0.chunk.id.document.rawValue }, ["A"])
     }
 
+    /// A cancelled query (the SwiftUI `.task`-per-keystroke case) must return promptly
+    /// and must NOT be reported as a source timeout — blaming healthy backends for the
+    /// caller's own cancellation is exactly the kind of lie this report exists to avoid.
+    func testCallerCancellationIsReportedAsCancelledNotTimedOut() async {
+        let orchestrator = RetrievalOrchestrator(
+            sources: [SlowCooperativeSource(id: "slow"), SlowCooperativeSource(id: "slower")],
+            configuration: OrchestratorConfiguration(perSourceDeadline: .seconds(30))
+        )
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let task = Task { await orchestrator.retrieve(RetrievalQuery(text: "q")) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let response = await task.value
+        let elapsed = clock.now - start
+
+        XCTAssertLessThan(elapsed, .seconds(5),
+                          "a cancelled query must not wait out a 30s per-source deadline")
+        XCTAssertTrue(response.wasCancelled)
+        XCTAssertEqual(response.reports.count, 2)
+        XCTAssertTrue(response.reports.allSatisfy { $0.disposition == .cancelled },
+                      "cancellation must not be reported as .timedOut")
+        XCTAssertFalse(response.isComplete)
+    }
+
     func testEndToEndEngineRoundTrip() async throws {
         let engine = HybridSearchEngine(
             configuration: OrchestratorConfiguration(perSourceDeadline: .seconds(2), maxResults: 5)
