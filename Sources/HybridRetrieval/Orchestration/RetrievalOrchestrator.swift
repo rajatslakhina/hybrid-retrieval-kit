@@ -5,8 +5,12 @@
 public struct SourceReport: Sendable {
     public enum Disposition: Equatable, Sendable {
         case fulfilled(resultCount: Int)
+        /// The source missed its deadline.
         case timedOut
         case failed(message: String)
+        /// The caller cancelled the query while this source was in flight. Never
+        /// folded into `timedOut` — a cancelled query says nothing about source health.
+        case cancelled
     }
 
     public let source: SourceID
@@ -28,6 +32,13 @@ public struct RetrievalResponse: Sendable {
             if case .fulfilled = report.disposition { return true }
             return false
         }
+    }
+
+    /// True when the caller cancelled this query mid-flight. Such a response is
+    /// abandoned work, not a degraded answer — callers should discard it rather than
+    /// render it as a partial result.
+    public var wasCancelled: Bool {
+        reports.contains { $0.disposition == .cancelled }
     }
 
     /// Count of sources that fulfilled.
@@ -157,6 +168,14 @@ public struct RetrievalOrchestrator: Sendable {
                 reports.append(SourceReport(
                     source: id,
                     disposition: .failed(message: String(describing: error)),
+                    latency: latency,
+                    privacyViolationsFiltered: 0
+                ))
+
+            case .cancelled:
+                reports.append(SourceReport(
+                    source: id,
+                    disposition: .cancelled,
                     latency: latency,
                     privacyViolationsFiltered: 0
                 ))
