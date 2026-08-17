@@ -57,6 +57,12 @@ final class FusionTests: XCTestCase {
                        "a source repeating an ID must not multiply its contribution")
     }
 
+    /// Fan-out completion order must change nothing observable. Ranking alone is a weak
+    /// check — RRF accumulation is commutative and the final sort is a total order, so
+    /// the ranking is stable even without the source-order normalization. The
+    /// attribution list is what that normalization actually controls, so this asserts
+    /// it too: delete `lists.sorted(by:)` in `ReciprocalRankFusion.fuse` and the
+    /// `contributingSources` assertion fails.
     func testFusionIsDeterministicRegardlessOfListOrder() {
         let fuser = ReciprocalRankFusion(k: 60)
         let listA = (source: SourceID("s1"), hits: [chunk("A", score: 2.0), chunk("B", score: 1.0)])
@@ -64,8 +70,15 @@ final class FusionTests: XCTestCase {
 
         let forward = fuser.fuse([listA, listB], limit: 10)
         let reversed = fuser.fuse([listB, listA], limit: 10)
+
         XCTAssertEqual(forward.map { $0.chunk.id }, reversed.map { $0.chunk.id },
                        "fan-out completion order must never change the ranking")
+        XCTAssertEqual(forward.map { $0.contributingSources }, reversed.map { $0.contributingSources },
+                       "attribution order must be stable across fan-out completion order")
+
+        // And attribution is in source-ID order, not arrival order.
+        let consensus = forward.first { $0.chunk.id.document.rawValue == "A" }
+        XCTAssertEqual(consensus?.contributingSources, ["s1", "s2"])
     }
 
     func testEqualScoresTieBreakByChunkID() {
