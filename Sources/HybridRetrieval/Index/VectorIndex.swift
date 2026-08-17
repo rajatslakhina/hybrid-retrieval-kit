@@ -47,6 +47,16 @@ public final class VectorIndex {
 
     public let dimensions: Int
     public let byteBudget: Int
+    /// Cosine similarity below which a candidate is not a result at all.
+    ///
+    /// Why this exists: a nearest-neighbour index without a floor is a *ranking*, not a
+    /// *search* — it will happily return the whole corpus ordered by noise for a query
+    /// that matches nothing. Downstream that is worse than empty: RRF gives rank-1
+    /// weight to the least-bad garbage, and a RAG layer feeds it to the model as
+    /// context. The floor is the line between "these are weak matches" and "there is
+    /// no answer here," and it belongs to the index, which is the only component that
+    /// knows the score scale.
+    public let minimumSimilarity: Double
     private var entries: [ChunkID: Entry] = [:]
     private var clock: UInt64 = 0
     public private(set) var usedBytes = 0
@@ -57,9 +67,14 @@ public final class VectorIndex {
     ///   - dimensions: clamped to 4...4096.
     ///   - byteBudget: clamped to be non-negative. A budget of 0 stores nothing (and
     ///     every insert reports `rejectedExceedsBudget`) — legal, and tested.
-    public init(dimensions: Int, byteBudget: Int) {
+    ///   - minimumSimilarity: cosine floor, clamped to -1...1. Pass `-1` to disable
+    ///     (pure ranking mode). The 0.2 default is tuned for the bundled
+    ///     `HashingEmbedder`, whose collision noise on short queries sits well below it;
+    ///     a real semantic encoder has a different scale and should retune this.
+    public init(dimensions: Int, byteBudget: Int, minimumSimilarity: Double = 0.2) {
         self.dimensions = min(max(dimensions, 4), 4096)
         self.byteBudget = max(0, byteBudget)
+        self.minimumSimilarity = minimumSimilarity.isFinite ? min(max(minimumSimilarity, -1), 1) : 0.2
     }
 
     public var count: Int { entries.count }
@@ -111,9 +126,10 @@ public final class VectorIndex {
         }
     }
 
-    /// Cosine-similarity search over entries with tier `<= maxTier`. The query vector
-    /// is normalized here; a degenerate query returns `[]`, never a crash. Returned
-    /// entries have their recency refreshed (see type doc for why).
+    /// Cosine-similarity search over entries with tier `<= maxTier` scoring at or above
+    /// `minimumSimilarity`. The query vector is normalized here; a degenerate query
+    /// returns `[]`, never a crash. Returned entries have their recency refreshed
+    /// (see type doc for why).
     public func search(_ query: [Float], maxTier: PrivacyTier, limit: Int) -> [VectorHit] {
         guard limit > 0, query.count == dimensions, !entries.isEmpty else { return [] }
         guard let normalizedQuery = VectorMath.l2Normalized(query) else { return [] }
@@ -123,7 +139,9 @@ public final class VectorIndex {
         var scored: [(ChunkID, Double)] = []
         scored.reserveCapacity(entries.count)
         for (id, entry) in entries where entry.tier <= maxTier {
-            scored.append((id, VectorMath.dot(normalizedQuery, entry.vector)))
+            let score = VectorMath.dot(normalizedQuery, entry.vector)
+            guard score >= minimumSimilarity else { continue }
+            scored.append((id, score))
         }
         scored.sort { lhs, rhs in
             if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
