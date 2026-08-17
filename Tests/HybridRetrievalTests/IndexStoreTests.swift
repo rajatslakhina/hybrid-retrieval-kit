@@ -154,6 +154,42 @@ final class IndexStoreTests: XCTestCase {
         }
     }
 
+    /// The contending version of the test above: 40 writers race on the SAME document
+    /// with different sequence numbers, so completion order and sequence order disagree.
+    /// Convergence to the highest sequence — not the last writer to finish — is the
+    /// property the whole ordering protocol exists for.
+    func testConcurrentWritersOnOneDocumentConvergeToHighestSequence() async throws {
+        let store = IndexStore()
+        let documents = (1...40).map { i in
+            Document(id: DocumentID("contended"), text: "revision marker\(i) body", tier: .open)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            // Submit in shuffled order so the newest sequence is not submitted last.
+            for index in Array(documents.indices).shuffled() {
+                let document = documents[index]
+                let sequence = UInt64(index) + 1
+                group.addTask {
+                    _ = try? await store.apply(.upsert(document, sequence: sequence))
+                }
+            }
+            await group.waitForAll()
+        }
+
+        let sequence = await store.latestSequence(for: DocumentID("contended"))
+        XCTAssertEqual(sequence, 40, "the highest sequence must win regardless of completion order")
+
+        let winners = await store.lexicalSearch("marker40", maxTier: .open, limit: 5)
+        XCTAssertEqual(winners.count, 1, "the highest-sequence revision must be the searchable one")
+
+        // No earlier revision may survive alongside it.
+        for i in [1, 7, 39] {
+            let stale = await store.lexicalSearch("marker\(i)", maxTier: .open, limit: 5)
+            XCTAssertTrue(stale.isEmpty, "revision \(i) must have been fully replaced")
+        }
+        let documentCount = await store.documentCount
+        XCTAssertEqual(documentCount, 1)
+    }
+
     func testReindexReplacesOldChunksCompletely() async throws {
         let store = IndexStore()
         try await store.apply(.upsert(doc("d1", "First topic: espresso machines and grinders."), sequence: 1))
@@ -163,6 +199,65 @@ final class IndexStoreTests: XCTestCase {
         XCTAssertTrue(gone.isEmpty, "old chunks must be fully unindexed after re-ingest")
         let present = await store.lexicalSearch("alpine", maxTier: .open, limit: 5)
         XCTAssertEqual(present.count, 1)
+    }
+
+    /// Closes the gap that mattered most: tier filtering was covered on the raw
+    /// `LexicalIndex`/`VectorIndex` and at the orchestrator, but NOT on the path
+    /// `Document.tier` → stored chunk → index insert. Hardcoding `.open` inside
+    /// `IndexStore.apply`'s commit loop — i.e. making every ingested chunk
+    /// world-readable — previously left the whole suite green. It does not now.
+    func testDocumentTierSurvivesIngestAndGatesStoreSearches() async throws {
+        let store = IndexStore()
+        try await store.apply(.upsert(doc("public", "quarterly release checklist", tier: .open), sequence: 1))
+        try await store.apply(.upsert(doc("mine", "personal release retrospective", tier: .personal), sequence: 2))
+        try await store.apply(.upsert(doc("vault", "sensitive release pager rotation", tier: .sensitive), sequence: 3))
+
+        let openHits = await store.lexicalSearch("release", maxTier: .open, limit: 10)
+        XCTAssertEqual(openHits.map(\.id.document), [DocumentID("public")],
+                       "an open-tier query must not see personal or sensitive documents")
+        XCTAssertTrue(openHits.allSatisfy { $0.tier == .open })
+
+        let personalHits = await store.lexicalSearch("release", maxTier: .personal, limit: 10)
+        XCTAssertEqual(Set(personalHits.map(\.id.document)), [DocumentID("public"), DocumentID("mine")],
+                       "a personal-tier query sees open + personal, never sensitive")
+
+        let allHits = await store.lexicalSearch("release", maxTier: .sensitive, limit: 10)
+        XCTAssertEqual(allHits.count, 3)
+
+        // Same invariant on the vector path: embed the query the way VectorSource does.
+        let embedder = HashingEmbedder()
+        let vector = try await embedder.embed("release")
+        let openVectorHits = await store.vectorSearch(vector, maxTier: .open, limit: 10)
+        XCTAssertTrue(openVectorHits.allSatisfy { $0.tier == .open },
+                      "vector search must honour the ingested tier too")
+        let allVectorHits = await store.vectorSearch(vector, maxTier: .sensitive, limit: 10)
+        XCTAssertGreaterThan(allVectorHits.count, openVectorHits.count,
+                             "raising the tier must widen the vector result set")
+    }
+
+    /// End-to-end through the facade, because that is what apps actually call.
+    func testEngineHonoursTierAcrossEverySource() async throws {
+        let engine = HybridSearchEngine(
+            configuration: OrchestratorConfiguration(perSourceDeadline: .seconds(2), maxResults: 10)
+        )
+        try await engine.apply(.upsert(
+            Document(id: DocumentID("open-doc"), text: "incident escalation policy", tier: .open),
+            sequence: 1
+        ))
+        try await engine.apply(.upsert(
+            Document(id: DocumentID("secret-doc"), text: "incident escalation pager codes", tier: .sensitive),
+            sequence: 2
+        ))
+
+        let guarded = await engine.search(RetrievalQuery(text: "incident escalation", maxTier: .open))
+        XCTAssertTrue(guarded.hits.allSatisfy { $0.chunk.tier == .open })
+        XCTAssertFalse(guarded.hits.contains { $0.chunk.id.document == DocumentID("secret-doc") },
+                       "sensitive content must not reach an open-tier query through any source")
+        XCTAssertTrue(guarded.reports.allSatisfy { $0.privacyViolationsFiltered == 0 },
+                      "built-in sources must filter before the orchestrator has to")
+
+        let elevated = await engine.search(RetrievalQuery(text: "incident escalation", maxTier: .sensitive))
+        XCTAssertTrue(elevated.hits.contains { $0.chunk.id.document == DocumentID("secret-doc") })
     }
 
     func testVectorBudgetRefusalsDegradeGracefully() async throws {
