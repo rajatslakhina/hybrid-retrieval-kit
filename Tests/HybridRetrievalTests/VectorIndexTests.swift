@@ -70,8 +70,11 @@ final class VectorIndexTests: XCTestCase {
         XCTAssertTrue(index.search([1, 0], maxTier: .open, limit: 5).isEmpty)
     }
 
+    /// Pure ordering check, so the floor is opted out (`minimumSimilarity: -1`) —
+    /// otherwise the near-orthogonal "north" entry is correctly filtered before ranking
+    /// and this test would be silently checking two elements instead of three.
     func testCosineRankingOrdersByDirection() {
-        let index = VectorIndex(dimensions: 4, byteBudget: 10_000)
+        let index = VectorIndex(dimensions: 4, byteBudget: 10_000, minimumSimilarity: -1)
         index.insert(id: id("east"), vector: [1, 0, 0, 0], tier: .open)
         index.insert(id: id("northeast"), vector: [1, 1, 0, 0], tier: .open)
         index.insert(id: id("north"), vector: [0, 1, 0, 0], tier: .open)
@@ -93,6 +96,35 @@ final class VectorIndexTests: XCTestCase {
         XCTAssertEqual(openHits.map(\.id), [id("open")])
         let allHits = index.search(vector(0), maxTier: .sensitive, limit: 5)
         XCTAssertEqual(allHits.count, 2)
+    }
+
+    /// The floor is what makes this a *search* rather than a ranking: an orthogonal
+    /// query must return nothing at all, not the whole corpus ordered by noise.
+    /// Removing the `score >= minimumSimilarity` guard makes both halves fail.
+    func testSimilarityFloorRejectsOrthogonalMatches() {
+        let index = VectorIndex(dimensions: 4, byteBudget: 10_000, minimumSimilarity: 0.2)
+        index.insert(id: id("east"), vector: [1, 0, 0, 0], tier: .open)
+        index.insert(id: id("north"), vector: [0, 1, 0, 0], tier: .open)
+
+        // Orthogonal to both stored vectors: cosine 0 < 0.2.
+        XCTAssertTrue(index.search([0, 0, 1, 0], maxTier: .open, limit: 10).isEmpty,
+                      "a query matching nothing must return nothing, not noise")
+        // Aligned query still returns its match.
+        XCTAssertEqual(index.search([1, 0, 0, 0], maxTier: .open, limit: 10).map(\.id), [id("east")])
+    }
+
+    func testFloorOfMinusOneRestoresPureRankingMode() {
+        let index = VectorIndex(dimensions: 4, byteBudget: 10_000, minimumSimilarity: -1)
+        index.insert(id: id("east"), vector: [1, 0, 0, 0], tier: .open)
+        index.insert(id: id("north"), vector: [0, 1, 0, 0], tier: .open)
+        XCTAssertEqual(index.search([0, 0, 1, 0], maxTier: .open, limit: 10).count, 2,
+                       "an opted-out floor must return every candidate")
+    }
+
+    func testHostileFloorIsClamped() {
+        XCTAssertEqual(VectorIndex(dimensions: 4, byteBudget: 10, minimumSimilarity: .nan).minimumSimilarity, 0.2)
+        XCTAssertEqual(VectorIndex(dimensions: 4, byteBudget: 10, minimumSimilarity: 9).minimumSimilarity, 1)
+        XCTAssertEqual(VectorIndex(dimensions: 4, byteBudget: 10, minimumSimilarity: -9).minimumSimilarity, -1)
     }
 
     func testReplacementUpdatesAccountingExactly() {
