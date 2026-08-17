@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets anyone re-verify the current tree on demand without pushing a commit.
+  workflow_dispatch:
 
 jobs:
   # Full test suite on Linux: proves the retrieval engine is genuinely
