@@ -33,7 +33,7 @@ Micro (the seams): every stage is a protocol; the model is *absent by design*.
    │ Chunker   │  │ Embedding  │          │ Lexical  │ │ Vector │ │ your source: │
    │ (protocol)│  │ Provider   │          │ Source   │ │ Source │ │ Spotlight,   │
    └───────────┘  │ (protocol) │          │ (BM25)   │ │(cosine)│ │ FAQ, remote… │
-                  └────────────┘          └──────────┘ └────────┘ └─────────────┘
+                  └────────────┘          └──────────┘ └────────┘ └──────────────┘
                                                    │       │       │
                                                    └───────┴───────┘
                                                            ▼
