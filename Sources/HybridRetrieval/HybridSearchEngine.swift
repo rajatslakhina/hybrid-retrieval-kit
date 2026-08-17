@@ -17,11 +17,17 @@ public struct HybridSearchEngine: Sendable {
         chunker: any Chunker = SentenceWindowChunker(),
         embedder: any EmbeddingProvider = HashingEmbedder(),
         vectorByteBudget: Int = 4 << 20,
+        minimumVectorSimilarity: Double = 0.2,
         extraSources: [any RetrievalSource] = [],
         fuser: any RankFuser = ReciprocalRankFusion(),
         configuration: OrchestratorConfiguration = OrchestratorConfiguration()
     ) {
-        let store = IndexStore(chunker: chunker, embedder: embedder, vectorByteBudget: vectorByteBudget)
+        let store = IndexStore(
+            chunker: chunker,
+            embedder: embedder,
+            vectorByteBudget: vectorByteBudget,
+            minimumVectorSimilarity: minimumVectorSimilarity
+        )
         self.store = store
         var sources: [any RetrievalSource] = [
             LexicalSource(store: store),
