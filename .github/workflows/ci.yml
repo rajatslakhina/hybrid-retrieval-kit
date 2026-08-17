@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Full test suite on Linux: proves the retrieval engine is genuinely
+  # platform-agnostic (no hidden Apple-framework dependency) and machine-enforces
+  # the "0 warnings" claim via -warnings-as-errors on a clean build.
+  linux-build-test:
+    name: Linux · swift build (warnings as errors) + swift test
+    runs-on: ubuntu-22.04
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clean build with warnings as errors
+        run: |
+          rm -rf .build
+          swift build -Xswiftc -warnings-as-errors
+      - name: Run tests
+        run: swift test
+
+  # Compile-for-iOS proof: the generic Simulator destination needs no simulator
+  # runtime to exist on the runner (a named-device destination broke exactly that
+  # way on a docs-only commit in an earlier project).
+  ios-simulator-build:
+    name: macOS · xcodebuild for generic iOS Simulator
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme HybridRetrieval \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
