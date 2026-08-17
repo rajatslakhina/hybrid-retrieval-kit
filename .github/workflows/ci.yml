@@ -31,9 +31,13 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: List generated schemes
+        run: xcodebuild -list
+      # SwiftPM generates the xcodebuild scheme from the *package* name
+      # (hybrid-retrieval-kit), not the product/module name (HybridRetrieval).
       - name: Build for iOS Simulator
         run: |
           xcodebuild build \
-            -scheme HybridRetrieval \
+            -scheme hybrid-retrieval-kit \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
