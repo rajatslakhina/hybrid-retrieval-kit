@@ -84,16 +84,23 @@ final class DeadlineTests: XCTestCase {
     /// version of this test, which only asserted `.fulfilled`, did not.
     func testWinnerCancelsLoserTimer() async {
         let clock = ProbeClock()
-        let outcome = await Deadline.race(limit: .seconds(30), clock: clock) { true }
-        guard case .fulfilled = outcome else {
-            return XCTFail("fast operation must win its race")
+        // The operation takes long enough that the timer task is certainly scheduled
+        // and sleeping before the winner resumes — an instantly-returning operation can
+        // finish before the timer body ever runs, which made an earlier version of this
+        // test flaky (it passed locally and failed on CI's different scheduler).
+        let outcome = await Deadline.race(limit: .seconds(30), clock: clock) {
+            try await Task.sleep(nanoseconds: 150_000_000)
+            return true
         }
-        XCTAssertEqual(clock.sleepsStarted, 1, "the deadline timer must actually arm")
+        guard case .fulfilled = outcome else {
+            return XCTFail("operation must win a 30s race, got \(outcome)")
+        }
 
-        // The timer is cancelled from the winning task; give it a moment to unwind.
-        for _ in 0..<50 where clock.sleepsCancelled == 0 {
+        // Both counters are written from other tasks; poll rather than assume ordering.
+        for _ in 0..<200 where !(clock.sleepsStarted == 1 && clock.sleepsCancelled == 1) {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        XCTAssertEqual(clock.sleepsStarted, 1, "the deadline timer must actually arm")
         XCTAssertEqual(clock.sleepsCancelled, 1,
                        "the losing timer must be cancelled, not left pending for 30s")
     }
